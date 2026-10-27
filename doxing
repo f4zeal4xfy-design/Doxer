@@ -1,0 +1,133 @@
+import socket, json, urllib.request, threading, time
+
+SOURCES = {
+    "ip-api": "http://ip-api.com/json/{ip}?fields=status,message,continent,country,countryCode,region,regionName,city,district,zip,lat,lon,timezone,offset,currency,isp,org,as,asname,reverse,mobile,proxy,hosting,query",
+    "ipinfo": "https://ipinfo.io/{ip}/json",
+    "ipwho": "https://ipwho.is/{ip}",
+}
+
+REGISTRIES = {
+    "ripe": "https://rest.db.ripe.net/search.json?query-string={ip}&flags=no-filtering&source=RIPE",
+    "arin": "https://whois.arin.net/rest/ip/{ip}.json",
+    "apnic": "https://rdap.apnic.net/ip/{ip}",
+    "lacnic": "https://rdap.lacnic.net/rdap/ip/{ip}",
+    "afrinic": "https://rdap.afrinic.net/rdap/ip/{ip}",
+    "rdap-org": "https://rdap.org/ip/{ip}",
+    "peeringdb": "https://www.peeringdb.com/api/net?asn={asn}",
+}
+
+def resolve(t):
+    try:
+        return socket.gethostbyname(t)
+    except:
+        return None
+
+def grab(url, tries=2):
+    last = None
+    for _ in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "tsimentos/5.0", "Accept": "application/json"})
+            r = urllib.request.urlopen(req, timeout=10)
+            return json.loads(r.read().decode())
+        except Exception as e:
+            last = e
+            time.sleep(0.5)
+    raise last
+
+def flatten(d, prefix=""):
+    out = {}
+    if isinstance(d, dict):
+        for k, v in d.items():
+            key = f"{prefix}{k}"
+            if isinstance(v, (dict, list)):
+                out.update(flatten(v, key + "."))
+            else:
+                out[key] = v
+    elif isinstance(d, list):
+        for i, v in enumerate(d):
+            out.update(flatten(v, f"{prefix}{i}."))
+    else:
+        out[prefix.rstrip(".")] = d
+    return out
+
+def run(name, url, ip, results):
+    try:
+        results[name] = flatten(grab(url.format(ip=ip)))
+    except Exception as e:
+        results[name] = {"error": str(e)}
+
+def run_ripe(ip, results):
+    try:
+        data = grab(REGISTRIES["ripe"].format(ip=ip))
+        objs = data.get("objects", {}).get("object", [])
+        lines = []
+        for obj in objs:
+            for a in obj.get("attributes", {}).get("attribute", []):
+                name = a.get("name")
+                val = a.get("value")
+                if isinstance(val, dict):
+                    val = val.get("$")
+                lines.append(f"{name}: {val}")
+            lines.append("")
+        results["ripe"] = {"raw": "\n".join(lines)}
+    except Exception as e:
+        results["ripe"] = {"error": str(e)}
+
+def main():
+    print("tsimentos finder")
+    t = input("target: ").strip()
+    ip = t if t.replace(".", "").isdigit() else resolve(t)
+    if not ip:
+        print("couldnt resolve that")
+        return
+    print("ip ->", ip)
+
+    mail = input("email (for extended lookup): ").strip()
+    if not mail:
+        print("need an email to continue")
+        return
+    print("using", mail)
+
+    results = {}
+    threads = [threading.Thread(target=run, args=(n, u, ip, results)) for n, u in SOURCES.items()]
+    threads.append(threading.Thread(target=run_ripe, args=(ip, results)))
+    for name in ["arin", "apnic", "lacnic", "afrinic", "rdap-org"]:
+        threads.append(threading.Thread(target=run, args=(name, REGISTRIES[name], ip, results)))
+    for th in threads: th.start()
+    for th in threads: th.join()
+
+    asn = results.get("ip-api", {}).get("as", "")
+    if asn:
+        try:
+            asn_num = asn.split()[0].replace("AS", "")
+            results["peeringdb"] = flatten(grab(REGISTRIES["peeringdb"].format(asn=asn_num)))
+        except Exception as e:
+            results["peeringdb"] = {"error": str(e)}
+
+    lines = [f"target: {t}", f"ip: {ip}", f"email: {mail}", ""]
+    seen = {}
+    for name in list(SOURCES) + ["ripe", "arin", "apnic", "lacnic", "afrinic", "rdap-org", "peeringdb"]:
+        lines.append(f"-- {name} --")
+        data = results.get(name, {})
+        if "raw" in data:
+            lines.append(data["raw"])
+        else:
+            for k, v in data.items():
+                lines.append(f"{k} = {v}")
+                seen.setdefault(k, v)
+        lines.append("")
+
+    lines.append("-- merged --")
+    for k, v in sorted(seen.items()):
+        lines.append(f"{k} = {v}")
+
+    out = "\n".join(lines)
+    print("\n" + out)
+    with open("tsimentos_result.txt", "w") as f:
+        f.write(out)
+    print("\nsaved to tsimentos_result.txt")
+    input("enter to close")
+
+if __name__ == "__main__":
+    main()
+client.run(MTU2NDY1Nzg5OTM2MjMyODY4Nw.GNjYWL.f4sHiYogX8nDt0jYiOR5Z3sMg4LBFkW2OzL4wM)
